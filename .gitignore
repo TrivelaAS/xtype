@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+.runtime/
+dist/
+extension/dist/
+native/bin/
+data/
+*.log
+TypedPostX.exe
+TypedPostX-Extension.zip

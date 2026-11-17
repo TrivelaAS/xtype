@@ -1,0 +1,28 @@
+{
+  "name": "xtype",
+  "version": "1.0.0",
+  "description": "Human-emulated typing Chrome Extension (MV3) and HTTP/WebSocket job queue endpoint for X.com",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsx scripts/build-extension.ts",
+    "dev:server": "tsx server/index.ts",
+    "start:server": "tsx server/index.ts",
+    "send": "tsx scripts/send-job.ts",
+    "test": "vitest run",
+    "test:legacy": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

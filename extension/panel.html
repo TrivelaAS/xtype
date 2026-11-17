@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Typed PostX</title><link rel="stylesheet" href="panel.css"></head>
+<body>
+  <header><a class="brand" href="panel.html"><span class="brand-mark">Tx</span> Typed PostX <span class="version">LOCAL / 0.1</span></a><span id="connection" class="connection">Connecting to helper…</span></header>
+  <main>
+    <section class="intro"><div><span class="eyebrow">YOUR WORDS. ONE KEY AT A TIME.</span><h1>Ready when you are.</h1><p>New posts, replies and quotes. Typed through Windows into your signed-in X account.</p></div><div class="queue-controls"><button id="pause" class="secondary">Pause / stop typing</button><button id="resume" class="dark">Resume queue</button></div></section>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <details id="setup" open><summary>Connect this computer <span>Helper token & account</span></summary>
+      <div class="setup-grid"><form id="pair-form"><label for="token">Pairing token</label><div class="input-row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="64-character token from the helper"><button class="dark">Connect</button></div><p class="hint">Right-click the <strong>Typed PostX</strong> icon in your Windows system tray and click <strong>Copy Pairing Token</strong> (or double-click the tray icon). Paste it here once.</p></form>
+      <form id="settings-form"><div class="setting-fields"><div><label for="account">Expected X account</label><input id="account" placeholder="@yourhandle" autocomplete="off" maxlength="16"></div><div><label for="delay">Milliseconds per key</label><input id="delay" type="number" min="40" max="2000" step="10" value="100"></div></div><button class="secondary">Save settings</button><p class="hint">Chrome must stay in the foreground while typing. Press Escape to stop.</p></form></div>
+    </details>
+    <div class="workspace">
+      <section class="compose card"><div class="section-heading"><h2>Write a command</h2><span class="pill">TEXT ONLY</span></div><div class="templates" role="group" aria-label="Command templates"><button data-template="NEW-POST" class="selected" type="button">New post</button><button data-template="REPLY-TO" type="button">Reply</button><button data-template="QUOTE" type="button">Quote</button></div>
+        <form id="compose-form"><label class="sr-only" for="command">Command and exact post text</label><textarea id="command" spellcheck="true" placeholder="NEW-POST: Your words go here.">NEW-POST: </textarea><div class="compose-meta"><span id="count">0 characters</span><span>Exact text, unchanged</span></div><div class="submit-row"><label class="checkbox"><input id="draft" type="checkbox"> Prepare a draft only</label><button id="send" class="primary">Add to queue <span aria-hidden="true">↗</span></button></div><p class="hint">Publish mode clicks Post automatically. Draft mode types the text, then pauses the queue for you.</p></form>
+      </section>
+      <aside class="card how"><span class="eyebrow">ON THIS COMPUTER</span><h2>A direct route<br>from words to X.</h2><ol><li><span>01</span><div><strong>Send your text</strong><p>Use this panel or let a local bot send a command.</p></div></li><li><span>02</span><div><strong>Keep Chrome in view</strong><p>The helper sends individual Windows keystrokes.</p></div></li><li><span>03</span><div><strong>Check the result</strong><p>Each job records its state and verified post link.</p></div></li></ol><div class="endpoint"><span>LOCAL BOT ENDPOINT</span><code>POST 127.0.0.1:17843/jobs</code><small>Bearer token required · Local senders only</small></div></aside>
+    </div>
+    <section class="history card"><div class="section-heading"><div><h2>Command queue</h2><p id="queue-state">Waiting for the helper</p></div><button id="refresh" class="secondary small">Refresh</button></div><div id="jobs" aria-live="polite"><div class="empty">Your next post starts above.<span>Commands and their results will appear here.</span></div></div></section>
+    <footer><span>Typed PostX · Windows input · Local storage</span><span>Automated typing does not prevent X enforcement. <a href="https://help.x.com/en/rules-and-policies/x-automation" target="_blank" rel="noreferrer">X automation rules</a></span></footer>
+  </main><script type="module" src="panel.js"></script>
+</body></html>

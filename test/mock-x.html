@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mock X.com — XType Verification Harness</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #000;
+        --panel: #16181c;
+        --border: #2f3336;
+        --text: #e7e9ea;
+        --muted: #71767b;
+        --accent: #1d9bf0;
+        --green: #00ba7c;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      .layout {
+        max-width: 960px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 20px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      .composer {
+        min-height: 96px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        outline: none;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.45;
+        font-size: 16px;
+      }
+      .composer:focus {
+        border-color: var(--accent);
+      }
+      .composer:empty::before {
+        content: attr(data-placeholder);
+        color: var(--muted);
+      }
+      .toolbar {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 10px;
+        gap: 10px;
+      }
+      button {
+        border: none;
+        border-radius: 999px;
+        padding: 8px 16px;
+        font-weight: 700;
+        cursor: pointer;
+        background: var(--accent);
+        color: #fff;
+      }
+      button.ghost {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 12px;
+        position: relative;
+      }
+      .dropdown {
+        position: absolute;
+        top: 40px;
+        left: 90px;
+        background: #000;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 6px;
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        z-index: 20;
+        min-width: 150px;
+      }
+      .dropdown.open {
+        display: flex;
+      }
+      .dropdown a,
+      .dropdown button {
+        text-align: left;
+        background: transparent;
+        color: var(--text);
+        text-decoration: none;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .dropdown a:hover,
+      .dropdown button:hover {
+        background: #16181c;
+      }
+      .dialog-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(91, 112, 131, 0.4);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 40;
+      }
+      .dialog-backdrop.open {
+        display: flex;
+      }
+      .dialog {
+        width: 480px;
+        background: #000;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 16px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 6px 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .trusted-true {
+        color: var(--green);
+        font-weight: 700;
+      }
+      .trusted-false {
+        color: #f4212e;
+        font-weight: 700;
+      }
+      .status-line {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <div>
+        <div class="card" id="inlineComposerCard">
+          <h3 style="margin-top: 0;">Mock Home Composer</h3>
+          <div
+            id="inlineComposer"
+            class="composer"
+            contenteditable="true"
+            role="textbox"
+            data-testid="tweetTextarea_0"
+            data-placeholder="What is happening?!"
+          ></div>
+          <div class="toolbar">
+            <button data-testid="tweetButtonInline" id="inlineSubmitBtn">Post</button>
+          </div>
+          <div id="inlineResult" class="status-line"></div>
+        </div>
+
+        <article class="card" data-testid="tweet">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <strong>@mock_founder</strong>
+            <a href="/demo/status/1850000000000000000" style="color: var(--muted);">
+              Status #1850000000000000000
+            </a>
+          </div>
+          <div data-testid="tweetText">
+            Distribution beats pure product craft every single week. Build tight feedback loops,
+            talk to users daily, and keep your cadence human.
+          </div>
+          <div class="actions">
+            <button class="ghost" data-testid="reply" id="replyActionBtn">Reply</button>
+            <button class="ghost" data-testid="retweet" id="retweetActionBtn">Repost</button>
+
+            <div class="dropdown" data-testid="Dropdown" id="repostDropdown">
+              <button data-testid="retweetConfirm" id="repostConfirmBtn">Repost</button>
+              <a href="/compose/post" role="menuitem" id="quoteMenuBtn">Quote</a>
+            </div>
+          </div>
+          <div id="tweetActionResult" class="status-line"></div>
+        </article>
+      </div>
+
+      <div class="card" style="max-height: 540px; overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="margin: 0;">Live Input Telemetry</h3>
+          <button class="ghost" id="clearLogBtn" style="padding: 4px 10px; font-size: 11px;">
+            Clear
+          </button>
+        </div>
+        <p class="status-line" id="statsLine">Events: 0 | Avg IKI: -</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Key / Data</th>
+              <th>isTrusted</th>
+              <th>IKI (ms)</th>
+            </tr>
+          </thead>
+          <tbody id="eventBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="dialog-backdrop" id="modalBackdrop">
+      <div class="dialog" role="dialog" aria-modal="true">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+          <strong id="modalTitle">Compose</strong>
+          <button class="ghost" id="closeModalBtn" style="padding: 4px 10px;">Close</button>
+        </div>
+        <div
+          id="modalComposer"
+          class="composer"
+          contenteditable="true"
+          role="textbox"
+          data-testid="tweetTextarea_0"
+          data-placeholder="Post your reply or quote..."
+        ></div>
+        <div class="toolbar">
+          <button data-testid="tweetButton" id="modalSubmitBtn">Post</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const eventBody = document.getElementById('eventBody');
+      const statsLine = document.getElementById('statsLine');
+      const inlineComposer = document.getElementById('inlineComposer');
+      const modalComposer = document.getElementById('modalComposer');
+      const modalBackdrop = document.getElementById('modalBackdrop');
+      const modalTitle = document.getElementById('modalTitle');
+      const repostDropdown = document.getElementById('repostDropdown');
+      const inlineResult = document.getElementById('inlineResult');
+      const tweetActionResult = document.getElementById('tweetActionResult');
+
+      if (new URLSearchParams(window.location.search).get('view') === 'tweet') {
+        document.getElementById('inlineComposerCard').style.display = 'none';
+      }
+
+      let lastKeydownAt = null;
+      const ikis = [];
+      let totalEvents = 0;
+
+      function logEvent(evtName, keyText, isTrusted, iki) {
+        totalEvents += 1;
+        if (typeof iki === 'number') {
+          ikis.push(iki);
+        }
+        const avg =
+          ikis.length > 0
+            ? Math.round(ikis.reduce((a, b) => a + b, 0) / ikis.length)
+            : '-';
+        statsLine.textContent = `Events: ${totalEvents} | Avg IKI: ${avg} ms`;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${evtName}</td>
+          <td><code>${String(keyText).replace(/</g, '&lt;')}</code></td>
+          <td class="${isTrusted ? 'trusted-true' : 'trusted-false'}">${isTrusted}</td>
+          <td>${typeof iki === 'number' ? iki : '-'}</td>
+        `;
+        eventBody.prepend(tr);
+      }
+
+      function attachListeners(el) {
+        el.addEventListener('keydown', (e) => {
+          const now = performance.now();
+          const iki = lastKeydownAt !== null ? Math.round(now - lastKeydownAt) : null;
+          lastKeydownAt = now;
+          logEvent('keydown', e.key, e.isTrusted, iki);
+        });
+        el.addEventListener('input', (e) => {
+          logEvent('input', e.data ?? '[edit]', e.isTrusted, null);
+        });
+      }
+
+      attachListeners(inlineComposer);
+      attachListeners(modalComposer);
+
+      document.getElementById('inlineSubmitBtn').addEventListener('click', (e) => {
+        inlineResult.textContent = `Submitted inline post (isTrusted=${e.isTrusted}): "${inlineComposer.innerText}"`;
+      });
+
+      document.getElementById('replyActionBtn').addEventListener('click', (e) => {
+        modalTitle.textContent = 'Reply to @mock_founder';
+        modalBackdrop.classList.add('open');
+        logEvent('click:reply', 'button', e.isTrusted, null);
+      });
+
+      document.getElementById('retweetActionBtn').addEventListener('click', (e) => {
+        repostDropdown.classList.toggle('open');
+        logEvent('click:retweet', 'button', e.isTrusted, null);
+      });
+
+      document.getElementById('repostConfirmBtn').addEventListener('click', (e) => {
+        repostDropdown.classList.remove('open');
+        tweetActionResult.textContent = `Reposted! (isTrusted=${e.isTrusted})`;
+        logEvent('click:retweetConfirm', 'confirm', e.isTrusted, null);
+      });
+
+      document.getElementById('quoteMenuBtn').addEventListener('click', (e) => {
+        e.preventDefault();
+        repostDropdown.classList.remove('open');
+        modalTitle.textContent = 'Quote @mock_founder';
+        modalBackdrop.classList.add('open');
+        logEvent('click:quote', 'menu', e.isTrusted, null);
+      });
+
+      document.getElementById('modalSubmitBtn').addEventListener('click', (e) => {
+        modalBackdrop.classList.remove('open');
+        tweetActionResult.textContent = `Submitted modal post (isTrusted=${e.isTrusted}): "${modalComposer.innerText}"`;
+      });
+
+      document.getElementById('closeModalBtn').addEventListener('click', () => {
+        modalBackdrop.classList.remove('open');
+      });
+
+      document.getElementById('clearLogBtn').addEventListener('click', () => {
+        eventBody.innerHTML = '';
+        ikis.length = 0;
+        totalEvents = 0;
+        lastKeydownAt = null;
+        statsLine.textContent = 'Events: 0 | Avg IKI: -';
+      });
+    </script>
+  </body>
+</html>
