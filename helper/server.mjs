@@ -1,8 +1,8 @@
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { JobStore, atomicJSON, ACTIVE } from './jobs.mjs';
 import { NativeKeyboard } from './native.mjs';
@@ -12,8 +12,22 @@ const secureEqual = (a, b) => typeof a === 'string' && Buffer.byteLength(a) === 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 export async function createServer({ dataDir, port = 17843, native = new NativeKeyboard() } = {}) {
+  const isCustomDataDir = Boolean(dataDir);
   if (!dataDir) dataDir = process.env.TYPED_POSTX_DATA || join(process.env.LOCALAPPDATA || process.cwd(), 'TypedPostX');
   mkdirSync(dataDir, { recursive: true });
+  const dataLogPath = join(dataDir, 'trace.log');
+  const exeLogPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'TypedPostX-trace.log');
+  const traceRing = [];
+  const traceLog = (source, message, details) => {
+    const extra = details !== undefined ? ` ${typeof details === 'string' ? details : JSON.stringify(details)}` : '';
+    const line = `[${new Date().toISOString()}] [${source || 'HELPER'}] ${message || ''}${extra}`;
+    traceRing.push(line);
+    if (traceRing.length > 1000) traceRing.shift();
+    try { appendFileSync(dataLogPath, line + '\n', 'utf8'); } catch {}
+    if (!isCustomDataDir) {
+      try { appendFileSync(exeLogPath, line + '\n', 'utf8'); } catch {}
+    }
+  };
   const configPath = join(dataDir, 'config.json');
   const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : {
     token: randomBytes(32).toString('hex'), extensionId: null, expectedAccount: '', delayMs: 100, paused: false
@@ -32,9 +46,11 @@ export async function createServer({ dataDir, port = 17843, native = new NativeK
     if (closed || !client || active || config.paused || !config.expectedAccount) return;
     const job = store.claim(); if (!job) return;
     active = { id: job.id, index: 0, chars: Array.from(job.text), lastKeyAt: 0 };
+    traceLog('BROKER', `Dispatching job id=${job.id} action=${job.action} mode=${job.mode} len=${active.chars.length}`);
     send(client, { type: 'job', job, settings: publicConfig() });
   }
   async function stop(reason) {
+    traceLog('BROKER', `Stop active=${active?.id || 'none'} reason="${reason}"`);
     config.paused = true; saveConfig();
     if (active) { store.update(active.id, { status: 'needs-attention', error: reason }); active = null; }
     send(client, { type: 'stop', reason });
@@ -58,6 +74,18 @@ export async function createServer({ dataDir, port = 17843, native = new NativeK
       if (!secureEqual(req.headers.authorization, `Bearer ${config.token}`)) return reply(401, { error: 'A valid bearer token is required' });
       const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
       if (req.method === 'GET' && pathname === '/status') return reply(200, status());
+      if (req.method === 'GET' && pathname === '/trace') {
+        let lines = traceRing.slice(-250);
+        if (!lines.length && existsSync(dataLogPath)) {
+          lines = readFileSync(dataLogPath, 'utf8').trim().split(/\r?\n/).slice(-250).filter(Boolean);
+        }
+        return reply(200, { logPath: dataLogPath, exeLogPath: isCustomDataDir ? null : exeLogPath, lines });
+      }
+      if (req.method === 'POST' && pathname === '/trace') {
+        const value = await body(req);
+        traceLog(value.source || 'EXT', `${value.step || ''} ${value.message || ''}`.trim(), value.data ?? value.details);
+        return reply(200, { ok: true });
+      }
       if (req.method === 'GET' && pathname === '/jobs') return reply(200, store.list());
       if (req.method === 'GET' && pathname.startsWith('/jobs/')) {
         const job = store.get(decodeURIComponent(pathname.slice(6)));
@@ -174,9 +202,16 @@ export async function createServer({ dataDir, port = 17843, native = new NativeK
           send(ws, { type: 'ready', ...publicConfig() }); dispatch(); return;
         }
         if (m.type === 'ping') return send(ws, { type: 'pong' });
+        if (m.type === 'trace') {
+          traceLog(m.source || 'EXT', `${m.step || ''} ${m.message || ''}`.trim(), m.data ?? m.details);
+          return;
+        }
         if (m.type !== 'rpc' || typeof m.id !== 'string') return ws.close(1008, 'Invalid request');
         try { send(ws, { type: 'result', id: m.id, ok: true, result: await rpc(m) }); }
-        catch (error) { send(ws, { type: 'result', id: m.id, ok: false, error: error.message }); }
+        catch (error) {
+          traceLog('RPC', `RPC failed method=${m.method} jobId=${m.jobId} error="${error.message}"`);
+          send(ws, { type: 'result', id: m.id, ok: false, error: error.message });
+        }
       }).catch(() => ws.close(1011, 'Internal error'));
     });
     ws.on('error', () => {});

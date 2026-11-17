@@ -18,6 +18,113 @@ internal static class StandaloneTrayHelper
 {
     private const int ServerPort = 17843;
 
+    // -------------------------------------------------------------------------
+    // Dual-File Diagnostic Tracer (exe dir TypedPostX-trace.log + AppData trace.log)
+    // -------------------------------------------------------------------------
+    private static class TraceLogger
+    {
+        private static readonly object LogLock = new object();
+        private static readonly List<string> RingBuffer = new List<string>();
+        private static string exeLogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TypedPostX-trace.log");
+        private static string dataLogPath = null;
+
+        public static string ExeLogPath { get { return exeLogPath; } }
+        public static string DataLogPath { get { return dataLogPath; } }
+
+        public static void Init(string dataDir)
+        {
+            lock (LogLock)
+            {
+                if (!string.IsNullOrEmpty(dataDir))
+                {
+                    Directory.CreateDirectory(dataDir);
+                    dataLogPath = Path.Combine(dataDir, "trace.log");
+                }
+            }
+        }
+
+        public static void Log(string source, string message)
+        {
+            string line = string.Format("[{0}] [{1}] {2}", DateTime.UtcNow.ToString("o"), source ?? "APP", message ?? "");
+            lock (LogLock)
+            {
+                RingBuffer.Add(line);
+                if (RingBuffer.Count > 1000) RingBuffer.RemoveAt(0);
+                AppendLineSafe(exeLogPath, line);
+                if (!string.IsNullOrEmpty(dataLogPath) && !string.Equals(dataLogPath, exeLogPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    AppendLineSafe(dataLogPath, line);
+                }
+            }
+        }
+
+        private static void AppendLineSafe(string filePath, string line)
+        {
+            try
+            {
+                var info = new FileInfo(filePath);
+                if (info.Exists && info.Length > 2 * 1024 * 1024)
+                {
+                    string oldPath = filePath + ".old";
+                    if (File.Exists(oldPath)) File.Delete(oldPath);
+                    File.Move(filePath, oldPath);
+                }
+                using (var fs = new FileStream(filePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                using (var sw = new StreamWriter(fs, new UTF8Encoding(false)))
+                {
+                    sw.WriteLine(line);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public static List<string> GetTailLines(int maxLines)
+        {
+            lock (LogLock)
+            {
+                if (RingBuffer.Count > 0)
+                {
+                    int start = Math.Max(0, RingBuffer.Count - maxLines);
+                    return RingBuffer.GetRange(start, RingBuffer.Count - start);
+                }
+            }
+            string path = !string.IsNullOrEmpty(dataLogPath) && File.Exists(dataLogPath) ? dataLogPath : exeLogPath;
+            var result = new List<string>();
+            try
+            {
+                if (File.Exists(path))
+                {
+                    string[] all = File.ReadAllLines(path, Encoding.UTF8);
+                    int start = Math.Max(0, all.Length - maxLines);
+                    for (int i = start; i < all.Length; i++) result.Add(all[i]);
+                }
+            }
+            catch
+            {
+            }
+            return result;
+        }
+
+        public static void EnsureLogFileExists()
+        {
+            lock (LogLock)
+            {
+                try
+                {
+                    if (!File.Exists(exeLogPath))
+                    {
+                        File.WriteAllText(exeLogPath, "", new UTF8Encoding(false));
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
     [STAThread]
     private static void Main()
     {
@@ -110,6 +217,30 @@ internal static class StandaloneTrayHelper
 
         [DllImport("kernel32.dll")]
         private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetThreadDesktop(uint dwThreadId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern bool GetUserObjectInformation(IntPtr hObj, int nIndex, StringBuilder pvInfo, int nLength, out int lpnLengthNeeded);
+
+        public static string GetCurrentDesktopName()
+        {
+            try
+            {
+                IntPtr hDesk = GetThreadDesktop(GetCurrentThreadId());
+                var sb = new StringBuilder(256);
+                int needed;
+                if (GetUserObjectInformation(hDesk, 2, sb, sb.Capacity, out needed))
+                {
+                    return sb.ToString();
+                }
+            }
+            catch
+            {
+            }
+            return "unknown";
+        }
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr window, int nCmdShow);
@@ -216,6 +347,26 @@ internal static class StandaloneTrayHelper
             }
         }
 
+        private static List<string> EnumerateBrowserWindowsSummary()
+        {
+            var list = new List<string>();
+            EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+            {
+                if (!IsWindowVisible(hWnd)) return true;
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                string pname = "";
+                try { pname = Process.GetProcessById((int)pid).ProcessName; } catch { }
+                if (IsSupportedBrowserProcess(pname))
+                {
+                    list.Add(string.Format("hWnd=0x{0:X} pid={1} proc={2} class={3} title=\"{4}\"",
+                        hWnd.ToInt64(), pid, pname, WindowClass(hWnd), WindowText(hWnd)));
+                }
+                return true;
+            }, IntPtr.Zero);
+            return list;
+        }
+
         public static void Arm(string marker)
         {
             lock (LockObj)
@@ -223,15 +374,24 @@ internal static class StandaloneTrayHelper
                 Disarm();
                 if (marker == null || !Regex.IsMatch(marker, "^TypedPostX:[a-zA-Z0-9-]{16,80}$"))
                 {
+                    TraceLogger.Log("WIN32", "Arm rejected invalid marker");
                     throw new Exception("Invalid window marker");
                 }
 
                 string procName;
                 IntPtr fg = GetForegroundWindow();
-                uint fgPid;
-                GetWindowThreadProcessId(fg, out fgPid);
+                uint fgPid = 0;
+                if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
                 string fgProc = "";
-                try { fgProc = Process.GetProcessById((int)fgPid).ProcessName; } catch { }
+                try { if (fgPid != 0) fgProc = Process.GetProcessById((int)fgPid).ProcessName; } catch { }
+                TraceLogger.Log("WIN32", string.Format(
+                    "Arm(marker={0}) fg=0x{1:X} pid={2} proc={3} class={4} title=\"{5}\"",
+                    marker, fg.ToInt64(), fgPid, fgProc, fg != IntPtr.Zero ? WindowClass(fg) : "", fg != IntPtr.Zero ? WindowText(fg) : ""));
+
+                List<string> visibleBrowsers = EnumerateBrowserWindowsSummary();
+                TraceLogger.Log("WIN32", visibleBrowsers.Count > 0
+                    ? "Visible browser windows (" + visibleBrowsers.Count + "): " + string.Join(" | ", visibleBrowsers.ToArray())
+                    : "Visible browser windows: NONE");
 
                 IntPtr target = IntPtr.Zero;
                 if (fg != IntPtr.Zero && IsSupportedBrowserProcess(fgProc) && WindowText(fg).Contains(marker))
@@ -244,13 +404,22 @@ internal static class StandaloneTrayHelper
                     target = FindMarkedBrowserWindow(marker, out procName);
                     if (target != IntPtr.Zero)
                     {
+                        TraceLogger.Log("WIN32", string.Format("Activating marked window hWnd=0x{0:X} proc={1}", target.ToInt64(), procName));
                         ActivateWindow(target);
                         Thread.Sleep(100);
+                        IntPtr postFg = GetForegroundWindow();
+                        TraceLogger.Log("WIN32", string.Format("After ActivateWindow fg=0x{0:X} title=\"{1}\"",
+                            postFg.ToInt64(), postFg != IntPtr.Zero ? WindowText(postFg) : ""));
                     }
                 }
 
                 if (target == IntPtr.Zero || GetForegroundWindow() != target || !WindowText(target).Contains(marker))
                 {
+                    string reason = target == IntPtr.Zero
+                        ? "No visible Chrome/Firefox window contains marker in title"
+                        : string.Format("Target found (0x{0:X}) but fg=0x{1:X} title=\"{2}\"",
+                            target.ToInt64(), GetForegroundWindow().ToInt64(), WindowText(target));
+                    TraceLogger.Log("WIN32", "Arm failed: " + reason);
                     throw new Exception("Bring the marked Chrome or Firefox tab to the foreground before typing");
                 }
 
@@ -258,6 +427,7 @@ internal static class StandaloneTrayHelper
                 armedProcessName = procName;
                 currentMarker = marker;
                 CheckUnlocked();
+                TraceLogger.Log("WIN32", string.Format("Arm succeeded hWnd=0x{0:X} proc={1}", armedWindow.ToInt64(), armedProcessName));
             }
         }
 
@@ -296,13 +466,19 @@ internal static class StandaloneTrayHelper
         private static void CheckUnlocked()
         {
             if (armedWindow == IntPtr.Zero) throw new Exception("Keyboard is not armed");
-            if (GetForegroundWindow() != armedWindow || !WindowText(armedWindow).Contains(currentMarker))
+            IntPtr fgNow = GetForegroundWindow();
+            string curTitle = WindowText(armedWindow);
+            if (fgNow != armedWindow || !curTitle.Contains(currentMarker))
             {
+                TraceLogger.Log("WIN32", string.Format(
+                    "CheckUnlocked failed: focus/title changed (armed=0x{0:X}, fg=0x{1:X}, marker={2}, title=\"{3}\")",
+                    armedWindow.ToInt64(), fgNow.ToInt64(), currentMarker, curTitle));
                 Disarm();
                 throw new Exception("Window focus changed; typing stopped");
             }
             if ((GetAsyncKeyState(0x1B) & 0x8001) != 0)
             {
+                TraceLogger.Log("WIN32", "CheckUnlocked failed: Escape pressed");
                 Disarm();
                 throw new Exception("Escape pressed; typing stopped");
             }
@@ -311,6 +487,7 @@ internal static class StandaloneTrayHelper
             {
                 if ((GetAsyncKeyState(modifiers[i]) & 0x8000) != 0)
                 {
+                    TraceLogger.Log("WIN32", string.Format("CheckUnlocked failed: modifier vk=0x{0:X} held down", modifiers[i]));
                     Disarm();
                     throw new Exception("Release Shift, Ctrl, Alt and Windows keys before typing");
                 }
@@ -322,21 +499,28 @@ internal static class StandaloneTrayHelper
             info.size = Marshal.SizeOf(typeof(GUIINFO));
             if (!GetGUIThreadInfo(thread, ref info))
             {
+                int err = Marshal.GetLastWin32Error();
+                TraceLogger.Log("WIN32", string.Format("CheckUnlocked failed: GetGUIThreadInfo returned false (thread={0}, win32Err={1})", thread, err));
                 Disarm();
                 throw new Exception("Browser page does not have keyboard focus; typing stopped");
             }
 
+            string focusClass = info.focus != IntPtr.Zero ? WindowClass(info.focus) : "";
             if (armedProcessName.Equals("chrome", StringComparison.OrdinalIgnoreCase))
             {
-                string focusClass = WindowClass(info.focus);
                 if (info.focus != armedWindow && !focusClass.StartsWith("Chrome_", StringComparison.OrdinalIgnoreCase))
                 {
+                    TraceLogger.Log("WIN32", string.Format(
+                        "CheckUnlocked failed: Chrome focus class mismatch (armed=0x{0:X}, info.active=0x{1:X}, info.focus=0x{2:X}, focusClass=\"{3}\")",
+                        armedWindow.ToInt64(), info.active.ToInt64(), info.focus.ToInt64(), focusClass));
                     Disarm();
                     throw new Exception("Chrome page does not have keyboard focus; typing stopped");
                 }
             }
             else if (info.focus == IntPtr.Zero)
             {
+                TraceLogger.Log("WIN32", string.Format(
+                    "CheckUnlocked failed: Firefox info.focus=0 (info.active=0x{0:X})", info.active.ToInt64()));
                 Disarm();
                 throw new Exception("Firefox page does not have keyboard focus; typing stopped");
             }
@@ -355,8 +539,11 @@ internal static class StandaloneTrayHelper
         private static void Emit(List<INPUT> inputs)
         {
             CheckUnlocked();
-            if (SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT))) != inputs.Count)
+            uint sent = SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(INPUT)));
+            if (sent != inputs.Count)
             {
+                int win32Err = Marshal.GetLastWin32Error();
+                TraceLogger.Log("WIN32", string.Format("SendInput rejected input: sent={0} expected={1} win32Err={2}", sent, inputs.Count, win32Err));
                 var releases = new List<INPUT>();
                 for (int i = 0; i < inputs.Count; i++)
                 {
@@ -551,6 +738,7 @@ internal static class StandaloneTrayHelper
         {
             dataDir = dataDirectory;
             Directory.CreateDirectory(dataDir);
+            TraceLogger.Init(dataDir);
             configPath = Path.Combine(dataDir, "config.json");
             jobsPath = Path.Combine(dataDir, "jobs.json");
             LoadConfig();
@@ -706,8 +894,13 @@ internal static class StandaloneTrayHelper
 
         public void Start()
         {
+            TraceLogger.Log("STARTUP", string.Format(
+                "OS={0} is64BitProc={1} sessionId={2} desktop=\"{3}\" exeDir=\"{4}\" dataDir=\"{5}\"",
+                Environment.OSVersion, Environment.Is64BitProcess, Process.GetCurrentProcess().SessionId,
+                NativeInput.GetCurrentDesktopName(), AppDomain.CurrentDomain.BaseDirectory, dataDir));
             listener = new TcpListener(IPAddress.Loopback, ServerPort);
             listener.Start();
+            TraceLogger.Log("STARTUP", "Listening on http://127.0.0.1:" + ServerPort);
 
             var acceptThread = new Thread(AcceptLoop) { IsBackground = true };
             acceptThread.Start();
@@ -834,6 +1027,8 @@ internal static class StandaloneTrayHelper
                     msg["type"] = "job";
                     msg["job"] = job;
                     msg["settings"] = PublicConfig();
+                    TraceLogger.Log("BROKER", string.Format("Dispatching job id={0} action={1} mode={2} len={3}",
+                        active.Id, GetStr(job, "action"), GetStr(job, "mode"), active.Chars.Count));
                     client.SendJson(serializer.Serialize(msg));
                     EmitStateChanged();
                     return;
@@ -844,6 +1039,7 @@ internal static class StandaloneTrayHelper
         private void StopActive(string reason)
         {
             bool wasActive = active != null;
+            TraceLogger.Log("BROKER", string.Format("StopActive wasActive={0} reason=\"{1}\"", wasActive, reason));
             config["paused"] = true;
             SaveConfig();
             if (active != null)
@@ -1024,8 +1220,16 @@ internal static class StandaloneTrayHelper
                 headers.TryGetValue("Upgrade", out upgradeHeader);
 
                 string expectedHost = "127.0.0.1:" + ServerPort;
-                if (!string.Equals(hostHeader, expectedHost, StringComparison.Ordinal))
+                if (!string.IsNullOrEmpty(hostHeader) && !string.Equals(hostHeader, expectedHost, StringComparison.Ordinal))
                 {
+                    TraceLogger.Log("HTTP", string.Format("403 {0} {1} bad Host=\"{2}\"", method, pathname, hostHeader));
+                    WriteHttpJson(stream, 403, "{\"error\":\"Origin or host is not allowed\"}");
+                    tcp.Close();
+                    return;
+                }
+                if (string.IsNullOrEmpty(hostHeader))
+                {
+                    TraceLogger.Log("HTTP", string.Format("403 {0} {1} missing Host", method, pathname));
                     WriteHttpJson(stream, 403, "{\"error\":\"Origin or host is not allowed\"}");
                     tcp.Close();
                     return;
@@ -1041,6 +1245,7 @@ internal static class StandaloneTrayHelper
                 lock (stateLock) { originOk = IsOriginAllowed(originHeader); }
                 if (!originOk)
                 {
+                    TraceLogger.Log("HTTP", string.Format("403 {0} {1} disallowed Origin=\"{2}\"", method, pathname, originHeader ?? ""));
                     WriteHttpJson(stream, 403, "{\"error\":\"Origin or host is not allowed\"}");
                     tcp.Close();
                     return;
@@ -1050,6 +1255,7 @@ internal static class StandaloneTrayHelper
                 headers.TryGetValue("Authorization", out authHeader);
                 if (!SecureEquals(authHeader, "Bearer " + GetToken()))
                 {
+                    TraceLogger.Log("HTTP", string.Format("401 {0} {1} invalid/missing bearer token", method, pathname));
                     WriteHttpJson(stream, 401, "{\"error\":\"A valid bearer token is required\"}");
                     tcp.Close();
                     return;
@@ -1122,6 +1328,18 @@ internal static class StandaloneTrayHelper
                     return;
                 }
 
+                if (method == "GET" && pathname == "/trace")
+                {
+                    var traceResp = new Dictionary<string, object>
+                    {
+                        { "logPath", TraceLogger.DataLogPath },
+                        { "exeLogPath", TraceLogger.ExeLogPath },
+                        { "lines", TraceLogger.GetTailLines(250) }
+                    };
+                    WriteHttpJson(stream, 200, serializer.Serialize(traceResp));
+                    return;
+                }
+
                 if (method == "GET" && pathname.StartsWith("/jobs/"))
                 {
                     string id = Uri.UnescapeDataString(pathname.Substring(6));
@@ -1146,6 +1364,18 @@ internal static class StandaloneTrayHelper
                         throw new Exception("Invalid JSON body");
                     }
                     if (bodyObj == null) throw new Exception("Expected a JSON object");
+                }
+
+                if (method == "POST" && pathname == "/trace")
+                {
+                    string src = GetStr(bodyObj, "source") ?? "EXT";
+                    string step = GetStr(bodyObj, "step") ?? "";
+                    string msgText = GetStr(bodyObj, "message") ?? "";
+                    object dataVal = bodyObj.ContainsKey("data") ? bodyObj["data"] : (bodyObj.ContainsKey("details") ? bodyObj["details"] : null);
+                    string dataJson = dataVal != null ? " " + serializer.Serialize(dataVal) : "";
+                    TraceLogger.Log(src, (step + " " + msgText).Trim() + dataJson);
+                    WriteHttpJson(stream, 200, "{\"ok\":true}");
+                    return;
                 }
 
                 if (method == "POST" && pathname == "/jobs")
@@ -1250,6 +1480,7 @@ internal static class StandaloneTrayHelper
             }
             catch (Exception ex)
             {
+                TraceLogger.Log("HTTP", string.Format("400 {0} {1} error=\"{2}\"", method, pathname, ex.Message));
                 WriteHttpJson(stream, 400, serializer.Serialize(new Dictionary<string, object> { { "error", ex.Message } }));
             }
         }
@@ -1495,11 +1726,13 @@ internal static class StandaloneTrayHelper
                     string pairedId = GetStr(config, "extensionId");
                     if (type != "auth" || !SecureEquals(token, GetToken()) || msgExtId != originId || (!string.IsNullOrEmpty(pairedId) && pairedId != originId))
                     {
+                        TraceLogger.Log("WS", string.Format("Auth rejected origin={0} msgExtId={1} paired={2}", originId, msgExtId, pairedId ?? ""));
                         ws.Close();
                         return;
                     }
                     if (client != null && client != ws)
                     {
+                        TraceLogger.Log("WS", "Replacing existing extension socket for " + originId);
                         WsClient prev = client;
                         client = null;
                         prev.Close();
@@ -1509,6 +1742,7 @@ internal static class StandaloneTrayHelper
                     ws.Authenticated = true;
                     authTimer.Change(Timeout.Infinite, Timeout.Infinite);
                     client = ws;
+                    TraceLogger.Log("WS", "Authenticated extension " + originId);
 
                     var readyMsg = PublicConfig();
                     readyMsg["type"] = "ready";
@@ -1525,10 +1759,21 @@ internal static class StandaloneTrayHelper
                 ws.SendJson("{\"type\":\"pong\"}");
                 return;
             }
+            if (mType == "trace")
+            {
+                string src = GetStr(msg, "source") ?? "EXT";
+                string step = GetStr(msg, "step") ?? "";
+                string msgText = GetStr(msg, "message") ?? "";
+                object dataVal = msg.ContainsKey("data") ? msg["data"] : (msg.ContainsKey("details") ? msg["details"] : null);
+                string dataJson = dataVal != null ? " " + serializer.Serialize(dataVal) : "";
+                TraceLogger.Log(src, (step + " " + msgText).Trim() + dataJson);
+                return;
+            }
 
             string rpcId = GetStr(msg, "id");
             if (mType != "rpc" || string.IsNullOrEmpty(rpcId))
             {
+                TraceLogger.Log("WS", "Closing WS due to invalid message type: " + (mType ?? ""));
                 ws.Close();
                 return;
             }
@@ -1544,6 +1789,8 @@ internal static class StandaloneTrayHelper
             }
             catch (Exception ex)
             {
+                TraceLogger.Log("RPC", string.Format("RPC failed method={0} jobId={1} error=\"{2}\"",
+                    GetStr(msg, "method"), GetStr(msg, "jobId"), ex.Message));
                 response["ok"] = false;
                 response["error"] = ex.Message;
             }
@@ -1603,6 +1850,11 @@ internal static class StandaloneTrayHelper
                     }
                     runSnapshot.Index++;
                     runSnapshot.LastKeyAtMs = Environment.TickCount & int.MaxValue;
+                    if (runSnapshot.Index == 1 || runSnapshot.Index % 20 == 0 || runSnapshot.Index == runSnapshot.Chars.Count)
+                    {
+                        TraceLogger.Log("RPC", string.Format("rpc.key typed {0}/{1} (jobId={2})",
+                            runSnapshot.Index, runSnapshot.Chars.Count, jobId));
+                    }
                     return new Dictionary<string, object> { { "typed", runSnapshot.Index } };
                 }
             }
@@ -1610,6 +1862,7 @@ internal static class StandaloneTrayHelper
             if (method == "arm")
             {
                 string marker = GetStr(args, "marker");
+                TraceLogger.Log("RPC", string.Format("rpc.arm start jobId={0} marker={1}", jobId, marker));
                 if (string.IsNullOrEmpty(marker) || !Regex.IsMatch(marker, "^TypedPostX:[a-zA-Z0-9-]{16,80}$"))
                     throw new Exception("Invalid window marker");
 
@@ -1631,8 +1884,9 @@ internal static class StandaloneTrayHelper
                         NativeInput.Arm(marker);
                         break;
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        TraceLogger.Log("RPC", string.Format("rpc.arm attempt {0}/15 failed: {1}", attempt, ex.Message));
                         lock (stateLock)
                         {
                             if (attempt >= 15 || active != runSnapshot || GetBool(config, "paused")) throw;
@@ -1648,6 +1902,7 @@ internal static class StandaloneTrayHelper
                     j["status"] = "typing";
                     j["updatedAt"] = DateTime.UtcNow.ToString("o");
                     SaveJobs();
+                    TraceLogger.Log("RPC", "rpc.arm succeeded -> status=typing");
                     return new Dictionary<string, object>();
                 }
             }
@@ -1669,6 +1924,7 @@ internal static class StandaloneTrayHelper
                     job["status"] = "ready";
                     job["updatedAt"] = DateTime.UtcNow.ToString("o");
                     SaveJobs();
+                    TraceLogger.Log("RPC", "rpc.ready succeeded -> status=ready");
                     return new Dictionary<string, object>();
                 }
 
@@ -1680,6 +1936,7 @@ internal static class StandaloneTrayHelper
                     job["status"] = "submitting";
                     job["updatedAt"] = DateTime.UtcNow.ToString("o");
                     SaveJobs();
+                    TraceLogger.Log("RPC", "rpc.submit succeeded -> status=submitting");
                     return new Dictionary<string, object>();
                 }
 
@@ -1693,6 +1950,7 @@ internal static class StandaloneTrayHelper
                         SaveJobs();
                         config["paused"] = true;
                         SaveConfig();
+                        TraceLogger.Log("RPC", "rpc.complete (draft) -> status=draft-ready");
                     }
                     else
                     {
@@ -1709,6 +1967,7 @@ internal static class StandaloneTrayHelper
                         job["resultUrl"] = resultUrl;
                         job["updatedAt"] = DateTime.UtcNow.ToString("o");
                         SaveJobs();
+                        TraceLogger.Log("RPC", "rpc.complete (publish) -> status=published url=" + resultUrl);
                     }
 
                     active = null;
@@ -1805,6 +2064,8 @@ internal static class StandaloneTrayHelper
         private readonly ToolStripMenuItem copyTokenItem;
         private readonly ToolStripMenuItem toggleQueueItem;
         private readonly ToolStripMenuItem clearStoppedItem;
+        private readonly ToolStripMenuItem openTraceItem;
+        private readonly ToolStripMenuItem copyTraceItem;
         private readonly ToolStripMenuItem openDataItem;
         private readonly ToolStripMenuItem exitItem;
         private readonly System.Windows.Forms.Timer refreshTimer;
@@ -1826,6 +2087,8 @@ internal static class StandaloneTrayHelper
             copyTokenItem = new ToolStripMenuItem("Copy Pairing Token", null, OnCopyToken);
             toggleQueueItem = new ToolStripMenuItem("Pause Queue", null, OnToggleQueue);
             clearStoppedItem = new ToolStripMenuItem("Clear Stopped Jobs", null, OnClearStopped);
+            openTraceItem = new ToolStripMenuItem("Open Trace Log (TypedPostX-trace.log)", null, OnOpenTrace);
+            copyTraceItem = new ToolStripMenuItem("Copy Trace Log to Clipboard", null, OnCopyTrace);
             openDataItem = new ToolStripMenuItem("Open Data Folder", null, OnOpenData);
             exitItem = new ToolStripMenuItem("Exit Typed PostX", null, OnExit);
 
@@ -1835,6 +2098,9 @@ internal static class StandaloneTrayHelper
             menu.Items.Add(copyTokenItem);
             menu.Items.Add(toggleQueueItem);
             menu.Items.Add(clearStoppedItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(openTraceItem);
+            menu.Items.Add(copyTraceItem);
             menu.Items.Add(openDataItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(exitItem);
@@ -1969,6 +2235,24 @@ internal static class StandaloneTrayHelper
         {
             broker.ClearStoppedJobs();
             trayIcon.ShowBalloonTip(2000, "Typed PostX", "Cleared stopped jobs and resumed queue.", ToolTipIcon.Info);
+        }
+
+        private void OnOpenTrace(object sender, EventArgs e)
+        {
+            TraceLogger.EnsureLogFileExists();
+            try { Process.Start("notepad.exe", "\"" + TraceLogger.ExeLogPath + "\""); } catch { }
+        }
+
+        private void OnCopyTrace(object sender, EventArgs e)
+        {
+            List<string> lines = TraceLogger.GetTailLines(200);
+            if (lines.Count == 0)
+            {
+                trayIcon.ShowBalloonTip(2000, "Typed PostX", "Trace log is empty.", ToolTipIcon.Info);
+                return;
+            }
+            Clipboard.SetText(string.Join("\r\n", lines.ToArray()));
+            trayIcon.ShowBalloonTip(2500, "Typed PostX", string.Format("Copied {0} trace lines to clipboard.", lines.Count), ToolTipIcon.Info);
         }
 
         private void OnOpenData(object sender, EventArgs e)

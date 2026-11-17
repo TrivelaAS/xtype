@@ -10,6 +10,9 @@
   const statusId = url => /\/status\/(\d+)/.exec(url || '')?.[1];
   const timeLink = article => [...article.querySelectorAll('a[href*="/status/"]')].find(link => link.querySelector('time'));
   let session = null;
+  const cTrace = (step, details = {}) => {
+    try { globalThis.chrome?.runtime?.sendMessage({ type: 'content-trace', step, details }).catch(() => {}); } catch {}
+  };
 
   function assertAccount(expected) {
     const lower = expected.toLowerCase();
@@ -21,7 +24,10 @@
     );
     const profileHref = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]')?.getAttribute('href') || '';
     const hasProfileLink = profileHref.replace(/^\/+|\/+$/g, '').toLowerCase() === lower;
-    if (!hasHandleText && !hasAvatar && !hasProfileLink) throw Error(`Cannot confirm X account @${expected}. Check login and the active account.`);
+    if (!hasHandleText && !hasAvatar && !hasProfileLink) {
+      cTrace('assertAccount.fail', { expected, switcherFound: Boolean(switcher), handlesFound: handles, profileHref });
+      throw Error(`Cannot confirm X account @${expected}. Check login and the active account.`);
+    }
   }
   function targetArticle(url) {
     const id = statusId(url);
@@ -33,10 +39,14 @@
     let editors = all('[data-testid="tweetTextarea_0"][contenteditable="true"]');
     const dialogs = editors.filter(editor => editor.closest('[role="dialog"]'));
     if (dialogs.length) editors = dialogs;
-    if (editors.length !== 1) throw Error('Composer is missing or ambiguous');
+    if (editors.length !== 1) {
+      cTrace('emptyEditor.ambiguous_or_missing', { editorsCount: editors.length, dialogsCount: dialogs.length });
+      throw Error('Composer is missing or ambiguous');
+    }
     const current = readText(editors[0]);
     if (current !== '') {
       const snippet = current.length > 60 ? `${current.slice(0, 60)}…` : current;
+      cTrace('emptyEditor.nonempty', { currentLen: current.length, snippet });
       throw Error(`An existing draft is present ("${snippet}"). Clear or save it yourself before continuing.`);
     }
     return editors[0];
@@ -65,18 +75,31 @@
     session = null;
   }
   function guard(marker, checkFocus = true) {
-    if (!session || session.marker !== marker || session.interrupted) throw Error('Typing session was interrupted');
-    if (!session.editor.isConnected) throw Error('The editor changed or was closed');
+    if (!session || session.marker !== marker || session.interrupted) {
+      cTrace('guard.interrupted', { hasSession: Boolean(session), markerMatch: session?.marker === marker, interrupted: session?.interrupted });
+      throw Error('Typing session was interrupted');
+    }
+    if (!session.editor.isConnected) {
+      cTrace('guard.editor_disconnected', {});
+      throw Error('The editor changed or was closed');
+    }
     if (checkFocus && document.activeElement !== session.editor && !session.editor.contains(document.activeElement)) {
       session.editor.focus();
     }
-    if (checkFocus && (!document.hasFocus() || document.visibilityState !== 'visible' || (document.activeElement !== session.editor && !session.editor.contains(document.activeElement)))) throw Error('Editor focus changed; typing stopped');
-    if (!document.title.startsWith(marker)) throw Error('Page title changed; typing stopped');
+    if (checkFocus && (!document.hasFocus() || document.visibilityState !== 'visible' || (document.activeElement !== session.editor && !session.editor.contains(document.activeElement)))) {
+      cTrace('guard.focus_lost', { hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeTag: document.activeElement?.tagName, activeIsEditor: document.activeElement === session.editor });
+      throw Error('Editor focus changed; typing stopped');
+    }
+    if (!document.title.startsWith(marker)) {
+      cTrace('guard.title_changed', { title: document.title, marker });
+      throw Error('Page title changed; typing stopped');
+    }
     assertAccount(session.expectedAccount);
     return { text: readText(session.editor) };
   }
   async function prepare({ job, marker, expectedAccount }) {
     cleanup();
+    cTrace('prepare.start', { href: location.href, title: document.title, hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeTag: document.activeElement?.tagName });
     await waitFor(() => { assertAccount(expectedAccount); return true; });
     if (job.action !== 'NEW-POST') {
       const target = await waitFor(() => targetArticle(job.url));
@@ -113,6 +136,7 @@
     const interrupt = event => {
       if (event.type === 'keydown' && event.key !== 'Escape') return;
       if (event.type === 'pointerdown' && (event.target === editor || editor.contains(event.target))) return;
+      cTrace('prepare.interrupt', { eventType: event.type, key: event.key || null, targetTag: event.target?.tagName || null });
       if (session?.marker === marker) { session.interrupted = true; globalThis.chrome?.runtime?.sendMessage({ type: 'interrupted', marker }).catch(() => {}); }
     };
     editor.scrollIntoView({ behavior: 'instant', block: 'center' });
@@ -123,6 +147,7 @@
     try { document.title = `${marker} — ${originalTitle || 'X'}`; } finally { updatingTitle = false; }
     if (titleObserver && titleRoot) titleObserver.observe(titleRoot, { childList: true, characterData: true, subtree: true });
     await new Promise(resolve => setTimeout(resolve, 250));
+    cTrace('prepare.ready', { title: document.title, editorConnected: editor.isConnected, hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeIsEditor: document.activeElement === editor || editor.contains(document.activeElement) });
     return guard(marker, false);
   }
   function publish({ marker, text }) {

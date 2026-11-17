@@ -54,4 +54,13 @@ for (const button of document.querySelectorAll('[data-template]')) button.onclic
 function updateCount() { let text = ''; try { text = parseCommand($('command').value).text; } catch { /* Incomplete command. */ } $('count').textContent = `${Array.from(text).length} characters`; }
 $('command').addEventListener('input', updateCount);
 $('pause').onclick = () => control({ action: 'pause' }); $('resume').onclick = () => control({ action: 'resume' }); $('refresh').onclick = () => refresh();
+$('copy-trace').onclick = async () => {
+  try {
+    const trace = await message({ type: 'trace' });
+    const lines = trace?.lines || [];
+    if (!lines.length) { notice('Trace log is empty yet. Try running or retrying a job first.'); return; }
+    await navigator.clipboard.writeText(lines.join('\n'));
+    notice(`Copied ${lines.length} trace lines to clipboard (saved at ${trace.exeLogPath || trace.logPath}).`);
+  } catch (error) { notice(error.message, true); }
+};
 void refresh(true); setInterval(() => void refresh(true), 2500);
