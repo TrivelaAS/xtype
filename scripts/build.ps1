@@ -9,7 +9,7 @@ New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Keyboard helper compilation failed.' }
 Write-Host "Built $outputDir\TypedPostX.Keyboard.exe"
 
-& $compiler /nologo /target:winexe /platform:x64 /optimize+ /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll "/out:$projectRoot\TypedPostX.exe" "$projectRoot\native\StandaloneTrayHelper.cs"
+& $compiler /nologo /target:winexe /platform:anycpu /optimize+ /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll "/out:$projectRoot\TypedPostX.exe" "$projectRoot\native\StandaloneTrayHelper.cs"
 if ($LASTEXITCODE -ne 0) { throw 'Standalone TypedPostX.exe compilation failed.' }
 Copy-Item -LiteralPath "$projectRoot\TypedPostX.exe" -Destination "$outputDir\TypedPostX.Tray.exe" -Force
 Write-Host "Built $projectRoot\TypedPostX.exe"

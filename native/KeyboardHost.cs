@@ -59,7 +59,7 @@ internal static class KeyboardHost
             if ((GetAsyncKeyState(key) & 0x8000) != 0) { Disarm(); throw new Exception("Release Shift, Ctrl, Alt and Windows keys before typing"); }
         uint pid; uint thread = GetWindowThreadProcessId(armedWindow, out pid);
         var info = new GUIINFO(); info.size = Marshal.SizeOf(typeof(GUIINFO));
-        if (!GetGUIThreadInfo(thread, ref info) || (selfTest ? info.focus != testEditor : WindowClass(info.focus) != "Chrome_RenderWidgetHostHWND"))
+        if (!GetGUIThreadInfo(thread, ref info) || (selfTest ? info.focus != testEditor : (info.focus != armedWindow && !WindowClass(info.focus).StartsWith("Chrome_", StringComparison.OrdinalIgnoreCase))))
         { Disarm(); throw new Exception("Chrome page does not have keyboard focus; typing stopped"); }
     }
     static INPUT Key(ushort vk, ushort scan, uint flags)

@@ -12,9 +12,16 @@
   let session = null;
 
   function assertAccount(expected) {
+    const lower = expected.toLowerCase();
     const switcher = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
     const handles = switcher?.textContent.match(/@[A-Za-z0-9_]{1,15}\b/g) || [];
-    if (!handles.some(handle => handle.slice(1).toLowerCase() === expected.toLowerCase())) throw Error(`Cannot confirm X account @${expected}. Check login and the active account.`);
+    const hasHandleText = handles.some(handle => handle.slice(1).toLowerCase() === lower);
+    const hasAvatar = [...document.querySelectorAll('[data-testid^="UserAvatar-Container-"]')].some(
+      el => el.getAttribute('data-testid').slice('UserAvatar-Container-'.length).toLowerCase() === lower
+    );
+    const profileHref = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]')?.getAttribute('href') || '';
+    const hasProfileLink = profileHref.replace(/^\/+|\/+$/g, '').toLowerCase() === lower;
+    if (!hasHandleText && !hasAvatar && !hasProfileLink) throw Error(`Cannot confirm X account @${expected}. Check login and the active account.`);
   }
   function targetArticle(url) {
     const id = statusId(url);
@@ -60,6 +67,9 @@
   function guard(marker, checkFocus = true) {
     if (!session || session.marker !== marker || session.interrupted) throw Error('Typing session was interrupted');
     if (!session.editor.isConnected) throw Error('The editor changed or was closed');
+    if (checkFocus && document.activeElement !== session.editor && !session.editor.contains(document.activeElement)) {
+      session.editor.focus();
+    }
     if (checkFocus && (!document.hasFocus() || document.visibilityState !== 'visible' || (document.activeElement !== session.editor && !session.editor.contains(document.activeElement)))) throw Error('Editor focus changed; typing stopped');
     if (!document.title.startsWith(marker)) throw Error('Page title changed; typing stopped');
     assertAccount(session.expectedAccount);
@@ -102,19 +112,18 @@
     session = { job, marker, expectedAccount, editor, scope, originalTitle, controller, titleObserver, titleTimer, interrupted: false, beforeIds: new Set([...document.querySelectorAll('a[href*="/status/"]')].map(a => statusId(a.getAttribute('href')))) };
     const interrupt = event => {
       if (event.type === 'keydown' && event.key !== 'Escape') return;
-      if (event.type === 'visibilitychange' && document.visibilityState === 'visible') return;
+      if (event.type === 'pointerdown' && (event.target === editor || editor.contains(event.target))) return;
       if (session?.marker === marker) { session.interrupted = true; globalThis.chrome?.runtime?.sendMessage({ type: 'interrupted', marker }).catch(() => {}); }
     };
     editor.scrollIntoView({ behavior: 'instant', block: 'center' });
     editor.click();
     editor.focus();
-    for (const type of ['pointerdown', 'keydown', 'visibilitychange']) document.addEventListener(type, interrupt, { capture: true, signal: controller.signal });
-    window.addEventListener('blur', interrupt, { signal: controller.signal });
+    for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, interrupt, { capture: true, signal: controller.signal });
     updatingTitle = true;
     try { document.title = `${marker} — ${originalTitle || 'X'}`; } finally { updatingTitle = false; }
     if (titleObserver && titleRoot) titleObserver.observe(titleRoot, { childList: true, characterData: true, subtree: true });
     await new Promise(resolve => setTimeout(resolve, 250));
-    return guard(marker);
+    return guard(marker, false);
   }
   function publish({ marker, text }) {
     guard(marker);

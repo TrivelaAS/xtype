@@ -103,6 +103,15 @@ internal static class StandaloneTrayHelper
         private static extern bool SetForegroundWindow(IntPtr window);
 
         [DllImport("user32.dll")]
+        private static extern bool BringWindowToTop(IntPtr window);
+
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr window, int nCmdShow);
 
         [DllImport("user32.dll")]
@@ -235,9 +244,8 @@ internal static class StandaloneTrayHelper
                     target = FindMarkedBrowserWindow(marker, out procName);
                     if (target != IntPtr.Zero)
                     {
-                        if (IsIconic(target)) ShowWindow(target, 9);
-                        SetForegroundWindow(target);
-                        Thread.Sleep(80);
+                        ActivateWindow(target);
+                        Thread.Sleep(100);
                     }
                 }
 
@@ -250,6 +258,30 @@ internal static class StandaloneTrayHelper
                 armedProcessName = procName;
                 currentMarker = marker;
                 CheckUnlocked();
+            }
+        }
+
+        private static void ActivateWindow(IntPtr target)
+        {
+            if (IsIconic(target)) ShowWindow(target, 9);
+            IntPtr fg = GetForegroundWindow();
+            uint fgPid;
+            uint fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out fgPid) : 0;
+            uint targetPid;
+            uint targetThread = GetWindowThreadProcessId(target, out targetPid);
+            uint curThread = GetCurrentThreadId();
+
+            bool attachedFg = fgThread != 0 && fgThread != curThread && AttachThreadInput(curThread, fgThread, true);
+            bool attachedTarget = targetThread != 0 && targetThread != curThread && AttachThreadInput(curThread, targetThread, true);
+            try
+            {
+                BringWindowToTop(target);
+                SetForegroundWindow(target);
+            }
+            finally
+            {
+                if (attachedTarget) AttachThreadInput(curThread, targetThread, false);
+                if (attachedFg) AttachThreadInput(curThread, fgThread, false);
             }
         }
 
@@ -296,7 +328,8 @@ internal static class StandaloneTrayHelper
 
             if (armedProcessName.Equals("chrome", StringComparison.OrdinalIgnoreCase))
             {
-                if (WindowClass(info.focus) != "Chrome_RenderWidgetHostHWND")
+                string focusClass = WindowClass(info.focus);
+                if (info.focus != armedWindow && !focusClass.StartsWith("Chrome_", StringComparison.OrdinalIgnoreCase))
                 {
                     Disarm();
                     throw new Exception("Chrome page does not have keyboard focus; typing stopped");
@@ -512,6 +545,7 @@ internal static class StandaloneTrayHelper
         private volatile bool stopped;
 
         public event Action StateChanged;
+        public event Action<string> ErrorOccurred;
 
         public EmbeddedBroker(string dataDirectory)
         {
@@ -809,6 +843,7 @@ internal static class StandaloneTrayHelper
 
         private void StopActive(string reason)
         {
+            bool wasActive = active != null;
             config["paused"] = true;
             SaveConfig();
             if (active != null)
@@ -833,6 +868,11 @@ internal static class StandaloneTrayHelper
             NativeInput.Disarm();
             NotifyClient();
             EmitStateChanged();
+            if (wasActive && !string.IsNullOrEmpty(reason))
+            {
+                Action<string> errHandler = ErrorOccurred;
+                if (errHandler != null) errHandler(reason);
+            }
         }
 
         private Dictionary<string, object> FindJob(string id)
@@ -1811,6 +1851,10 @@ internal static class StandaloneTrayHelper
             broker.StateChanged += delegate
             {
                 uiContext.Post(delegate { RefreshUi(); }, null);
+            };
+            broker.ErrorOccurred += delegate(string msg)
+            {
+                uiContext.Post(delegate { trayIcon.ShowBalloonTip(3500, "Typed PostX Stopped", msg, ToolTipIcon.Warning); }, null);
             };
 
             try
