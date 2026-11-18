@@ -5,9 +5,9 @@ import { JSDOM } from 'jsdom';
 
 const commands = await import('../extension/commands.js').catch(() => ({}));
 const contentPath = new URL('../extension/content.js', import.meta.url);
-function fixture(extra = '') {
+function fixture(extra = '', url = 'https://x.com/person/status/123') {
   assert.ok(existsSync(contentPath), 'content adapter must exist');
-  const dom = new JSDOM(`<button data-testid="SideNav_AccountSwitcher_Button">Hans <span>@hans</span></button>${extra}`, { url: 'https://x.com/person/status/123', runScripts: 'outside-only', pretendToBeVisual: true });
+  const dom = new JSDOM(`<button data-testid="SideNav_AccountSwitcher_Button">Hans <span>@hans</span></button>${extra}`, { url, runScripts: 'outside-only', pretendToBeVisual: true });
   dom.window.HTMLElement.prototype.getClientRects = function () { return this.hidden ? [] : [{}]; };
   Object.defineProperty(dom.window.HTMLElement.prototype, 'innerText', { get() { return this.textContent; } });
   dom.window.eval(readFileSync(contentPath, 'utf8'));
@@ -50,4 +50,35 @@ test('nonempty drafts and ambiguous composers are refused', () => {
 test('readback preserves spaces, emoji and normalizes only line endings', () => {
   const win = fixture(editor(' hello æøå 👋\nworld '));
   assert.equal(win.TypedPostXDOM.readText(win.document.querySelector('[role=textbox]')), ' hello æøå 👋\nworld ');
+});
+
+test('requireTargetInComposer confirms modal reply and quote previews without status links', () => {
+  const replyJob = { action: 'REPLY-TO', url: 'https://x.com/person/status/123' };
+  let win = fixture('<div role="dialog" id="dlg">Replying to <a href="/person">@person</a><div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div></div>', 'https://x.com/compose/post');
+  assert.doesNotThrow(() => win.TypedPostXDOM.requireTargetInComposer(replyJob, win.document.getElementById('dlg')));
+
+  const quoteJob = { action: 'QUOTE', url: 'https://x.com/person/status/123' };
+  win = fixture('<div role="dialog" id="dlg"><div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div><div data-testid="attachments"><span>Person</span><span>@person</span><time datetime="2026-11-18T10:00:00.000Z">1h</time></div></div>', 'https://x.com/compose/post');
+  assert.doesNotThrow(() => win.TypedPostXDOM.requireTargetInComposer(quoteJob, win.document.getElementById('dlg')));
+});
+
+test('requireTargetInComposer rejects blank dialogs and wrong or prefix-matching handles', () => {
+  const replyJob = { action: 'REPLY-TO', url: 'https://x.com/person/status/123' };
+  let win = fixture('<div role="dialog" id="dlg"><div data-testid="UserAvatar-Container-person"></div><div data-testid="tweetTextarea_0" role="textbox" contenteditable="true"></div></div>');
+  assert.throws(() => win.TypedPostXDOM.requireTargetInComposer(replyJob, win.document.getElementById('dlg')), /confirm/i);
+
+  win = fixture('<div role="dialog" id="dlg">Replying to <a href="/someoneelse">@someoneelse</a></div>');
+  assert.throws(() => win.TypedPostXDOM.requireTargetInComposer(replyJob, win.document.getElementById('dlg')), /confirm/i);
+
+  win = fixture('<div role="dialog" id="dlg">Replying to <a href="/person_2">@person_2</a></div>');
+  assert.throws(() => win.TypedPostXDOM.requireTargetInComposer(replyJob, win.document.getElementById('dlg')), /confirm/i);
+});
+
+test('targetArticle and verify ignore nested quote card links and text', async () => {
+  const quoteArticle = '<article data-testid="tweet"><div data-testid="tweetText">My outer commentary</div><div role="link"><a href="/melvynx/status/123"><time>old</time></a><div data-testid="tweetText">Quoted original text</div></div><a href="/hans/status/999"><time>now</time></a></article>';
+  const win = fixture(quoteArticle, 'https://x.com/hans/status/999');
+  const article = win.TypedPostXDOM.targetArticle('https://x.com/hans/status/999');
+  assert.equal(article.tagName, 'ARTICLE');
+  const verified = await win.TypedPostXDOM.verify({ url: 'https://x.com/hans/status/999', expectedAccount: 'hans', text: 'My outer commentary' });
+  assert.equal(verified.url, 'https://x.com/hans/status/999');
 });
