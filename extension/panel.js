@@ -1,6 +1,7 @@
 import { parseCommand } from './commands.js';
 const $ = id => document.getElementById(id);
 let settingsLoaded = false;
+let currentPaused = false;
 function message(payload) {
   return chrome.runtime.sendMessage(payload).then(response => { if (!response?.ok) throw Error(response?.error || 'Extension did not respond'); return response.result; });
 }
@@ -24,6 +25,7 @@ function renderJobs(jobs) {
 async function refresh(quiet = false) {
   try {
     const state = await message({ type: 'status' });
+    currentPaused = Boolean(state.paused);
     $('connection').textContent = state.connected ? (state.paused ? 'Connected · paused' : 'Connected · ready') : 'Helper running · extension connecting';
     $('connection').className = `connection ${state.paused ? 'paused' : state.connected ? 'online' : ''}`;
     $('queue-state').textContent = state.activeJob ? `Working on ${state.activeJob}` : state.paused ? 'Paused — inspect any draft before resuming' : state.expectedAccount ? `Ready for @${state.expectedAccount}` : 'Set your expected X account to begin';
@@ -41,7 +43,17 @@ $('settings-form').onsubmit = async event => {
 };
 $('compose-form').onsubmit = async event => {
   event.preventDefault(); $('send').disabled = true;
-  try { const command = parseCommand($('command').value); const job = await message({ type: 'submit', job: { id: crypto.randomUUID(), ...command, mode: $('draft').checked ? 'draft' : 'publish' } }); notice(`Queued ${job.action}. Keep the X tab in the foreground while it types.`); await refresh(); } catch (error) { notice(error.message, true); } finally { $('send').disabled = false; }
+  try {
+    const command = parseCommand($('command').value);
+    const job = await message({ type: 'submit', job: { id: crypto.randomUUID(), ...command, mode: $('draft').checked ? 'draft' : 'publish' } });
+    notice(
+      currentPaused
+        ? `Queued ${job.action}, but the queue is paused — click "Resume queue" above to start typing.`
+        : `Queued ${job.action}. Keep the X tab in the foreground while it types.`,
+      currentPaused
+    );
+    await refresh();
+  } catch (error) { notice(error.message, true); } finally { $('send').disabled = false; }
 };
 for (const button of document.querySelectorAll('[data-template]')) button.onclick = () => {
   const action = button.dataset.template;

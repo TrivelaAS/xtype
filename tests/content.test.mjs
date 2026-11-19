@@ -82,3 +82,43 @@ test('targetArticle and verify ignore nested quote card links and text', async (
   const verified = await win.TypedPostXDOM.verify({ url: 'https://x.com/hans/status/999', expectedAccount: 'hans', text: 'My outer commentary' });
   assert.equal(verified.url, 'https://x.com/hans/status/999');
 });
+
+test('prepare ignores background inline composer and guard recovers focus from modal button', async () => {
+  const html = [
+    '<div data-testid="primaryColumn"><div data-testid="tweetTextarea_0" role="textbox" contenteditable="true" tabindex="0"></div></div>',
+    '<article data-testid="tweet"><a href="/person/status/123"><time datetime="2026-11-18T10:00:00.000Z">1h</time></a><button data-testid="reply">Reply</button></article>'
+  ].join('');
+  const win = fixture(html, 'https://x.com/person/status/123');
+  win.document.hasFocus = () => true;
+  Object.defineProperty(win.document, 'visibilityState', { value: 'visible', configurable: true });
+  win.Element.prototype.scrollIntoView = () => {};
+
+  const replyBtn = win.document.querySelector('[data-testid="reply"]');
+  replyBtn.addEventListener('click', () => {
+    const dlg = win.document.createElement('div');
+    dlg.setAttribute('role', 'dialog');
+    dlg.innerHTML = '<button data-testid="app-bar-close">Close</button><span>Replying to <a href="/person">@person</a></span><div data-testid="tweetTextarea_0" role="textbox" contenteditable="true" tabindex="0"></div><button data-testid="tweetButton">Post</button>';
+    win.document.body.append(dlg);
+    dlg.querySelector('[data-testid="app-bar-close"]').focus();
+  });
+
+  try {
+    await win.TypedPostXDOM.prepare({
+      job: { action: 'REPLY-TO', url: 'https://x.com/person/status/123', text: 'Hello' },
+      marker: 'TypedPostX:m1',
+      expectedAccount: 'hans'
+    });
+    const modalEditor = win.document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]');
+    const closeBtn = win.document.querySelector('[data-testid="app-bar-close"]');
+    assert.equal(win.document.activeElement, modalEditor);
+
+    closeBtn.focus();
+    assert.equal(win.document.activeElement, closeBtn);
+
+    const state = await win.TypedPostXDOM.guard('TypedPostX:m1');
+    assert.equal(state.text, '');
+    assert.equal(win.document.activeElement, modalEditor);
+  } finally {
+    win.TypedPostXDOM.cleanup();
+  }
+});

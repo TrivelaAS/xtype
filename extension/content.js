@@ -122,7 +122,25 @@
     if (document.title.startsWith(session.marker)) document.title = session.originalTitle;
     session = null;
   }
-  function guard(marker, checkFocus = true) {
+  function focusEditor(editor) {
+    if (!editor?.isConnected) return;
+    try { editor.click(); } catch {}
+    try { editor.focus({ preventScroll: true }); } catch { try { editor.focus(); } catch {} }
+    try {
+      if (readText(editor) === '') {
+        const sel = window.getSelection?.();
+        if (sel && (!sel.anchorNode || !editor.contains(sel.anchorNode))) {
+          const target = editor.querySelector('[data-text="true"], [data-block="true"]') || editor;
+          const range = document.createRange();
+          range.selectNodeContents(target);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
+    } catch {}
+  }
+  async function guard(marker, checkFocus = true) {
     if (!session || session.marker !== marker || session.interrupted) {
       cTrace('guard.interrupted', { hasSession: Boolean(session), markerMatch: session?.marker === marker, interrupted: session?.interrupted });
       throw Error('Typing session was interrupted');
@@ -131,11 +149,24 @@
       cTrace('guard.editor_disconnected', {});
       throw Error('The editor changed or was closed');
     }
-    if (checkFocus && document.activeElement !== session.editor && !session.editor.contains(document.activeElement)) {
-      session.editor.focus();
+    const isEditorActive = () => document.activeElement === session.editor || session.editor.contains(document.activeElement);
+    if (checkFocus && (!document.hasFocus() || !isEditorActive())) {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        focusEditor(session.editor);
+        if (document.hasFocus() && isEditorActive()) break;
+        await new Promise(resolve => setTimeout(resolve, 60));
+      }
     }
-    if (checkFocus && (!document.hasFocus() || document.visibilityState !== 'visible' || (document.activeElement !== session.editor && !session.editor.contains(document.activeElement)))) {
-      cTrace('guard.focus_lost', { hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeTag: document.activeElement?.tagName, activeIsEditor: document.activeElement === session.editor });
+    if (checkFocus && (!document.hasFocus() || document.visibilityState !== 'visible' || !isEditorActive())) {
+      cTrace('guard.focus_lost', {
+        hasFocus: document.hasFocus(),
+        visibilityState: document.visibilityState,
+        activeTag: document.activeElement?.tagName,
+        activeTestId: document.activeElement?.getAttribute?.('data-testid') || null,
+        activeAriaLabel: document.activeElement?.getAttribute?.('aria-label') || null,
+        editorInDialog: Boolean(session.editor.closest('[role="dialog"]')),
+        activeIsEditor: isEditorActive()
+      });
       throw Error('Editor focus changed; typing stopped');
     }
     if (!document.title.startsWith(marker)) {
@@ -147,7 +178,7 @@
   }
   async function prepare({ job, marker, expectedAccount }) {
     cleanup();
-    cTrace('prepare.start', { href: location.href, title: document.title, hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeTag: document.activeElement?.tagName });
+    cTrace('prepare.start', { v: '0.1.2', href: location.href, title: document.title, hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeTag: document.activeElement?.tagName });
     await waitFor(() => { assertAccount(expectedAccount); return true; });
     let targetMeta = null;
     if (job.action !== 'NEW-POST') {
@@ -195,19 +226,21 @@
       cTrace('prepare.interrupt', { eventType: event.type, key: event.key || null, targetTag: event.target?.tagName || null });
       if (session?.marker === marker) { session.interrupted = true; globalThis.chrome?.runtime?.sendMessage({ type: 'interrupted', marker }).catch(() => {}); }
     };
+    if (job.action !== 'NEW-POST') await new Promise(resolve => setTimeout(resolve, 250));
     editor.scrollIntoView({ behavior: 'instant', block: 'center' });
-    editor.click();
-    editor.focus();
+    focusEditor(editor);
+    await new Promise(resolve => setTimeout(resolve, 120));
+    if (document.activeElement !== editor && !editor.contains(document.activeElement)) focusEditor(editor);
     for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, interrupt, { capture: true, signal: controller.signal });
     updatingTitle = true;
     try { document.title = `${marker} — ${originalTitle || 'X'}`; } finally { updatingTitle = false; }
     if (titleObserver && titleRoot) titleObserver.observe(titleRoot, { childList: true, characterData: true, subtree: true });
-    await new Promise(resolve => setTimeout(resolve, 250));
-    cTrace('prepare.ready', { title: document.title, editorConnected: editor.isConnected, hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeIsEditor: document.activeElement === editor || editor.contains(document.activeElement) });
-    return guard(marker, false);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    cTrace('prepare.ready', { v: '0.1.2', title: document.title, editorConnected: editor.isConnected, editorInDialog: Boolean(editor.closest('[role="dialog"]')), hasFocus: document.hasFocus(), visibilityState: document.visibilityState, activeTag: document.activeElement?.tagName, activeIsEditor: document.activeElement === editor || editor.contains(document.activeElement) });
+    return await guard(marker, false);
   }
-  function publish({ marker, text }) {
-    guard(marker);
+  async function publish({ marker, text }) {
+    await guard(marker);
     const actual = readText(session.editor);
     if (actual !== text) {
       cTrace('publish.text_mismatch', { actualLen: actual.length, expectedLen: text.length });

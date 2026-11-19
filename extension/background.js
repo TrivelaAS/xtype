@@ -98,7 +98,7 @@ async function runJob(job, settings) {
   if (running) { await rpc('fail', job.id, { error: 'An earlier job is still ending' }).catch(() => {}); return; }
   const run = { id: job.id, marker: `TypedPostX:${crypto.randomUUID()}`, stopped: false, tabId: null };
   running = run;
-  trace('job.start', { id: job.id, action: job.action, url: job.url, mode: job.mode, textLength: Array.from(job.text).length, expectedAccount: settings.expectedAccount });
+  trace('job.start', { id: job.id, extVersion: chrome.runtime.getManifest().version, action: job.action, url: job.url, mode: job.mode, textLength: Array.from(job.text).length, expectedAccount: settings.expectedAccount });
   try {
     chrome.action.setBadgeText({ text: 'TYPE' }); chrome.action.setBadgeBackgroundColor({ color: '#d75b2b' });
     // New job tabs preserve existing user tabs and never navigate away from a partial draft.
